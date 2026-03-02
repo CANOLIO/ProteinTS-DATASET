@@ -4,7 +4,7 @@
 ![Scikit-Learn](https://img.shields.io/badge/Scikit--Learn-Machine_Learning-orange?logo=scikit-learn)
 ![Pandas](https://img.shields.io/badge/Pandas-Data_Analysis-150458?logo=pandas)
 
-Modelo de machine learning para predecir la **temperatura óptima de crecimiento (OGT)** del organismo de origen a partir de la composición de aminoácidos de sus proteínas, utilizando features bioquímicas derivadas de la secuencia.
+El modelo utiliza la composición de aminoácidos y características bioquímicas de proteínas individuales como indicadores de la termoestabilidad adaptativa, prediciendo la **OGT (Optimal Growth Temperature)** del organismo de origen como variable objetivo.
 
 ---
 
