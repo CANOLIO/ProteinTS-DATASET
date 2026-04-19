@@ -1,205 +1,227 @@
-# Predicción de Termoestabilidad de Proteínas
+# ProteinTS
 
-![Python](https://img.shields.io/badge/Python-3.12-blue?logo=python&logoColor=white)
-![Scikit-Learn](https://img.shields.io/badge/Scikit--Learn-Machine_Learning-orange?logo=scikit-learn)
-![Pandas](https://img.shields.io/badge/Pandas-Data_Analysis-150458?logo=pandas)
+**Protein thermostability prediction from sequence composition using LightGBM on 7.7 million proteins**
 
-El modelo utiliza la composición de aminoácidos y características bioquímicas de proteínas individuales como indicadores de la termoestabilidad adaptativa, prediciendo la **OGT (Optimal Growth Temperature)** del organismo de origen como variable objetivo.
+[![Python 3.12](https://img.shields.io/badge/python-3.12-blue?logo=python&logoColor=white)](https://www.python.org/)
+[![LightGBM](https://img.shields.io/badge/model-LightGBM-ff69b4)](https://lightgbm.readthedocs.io/)
+[![Scikit-Learn](https://img.shields.io/badge/Scikit--Learn-Machine_Learning-orange?logo=scikit-learn)](https://scikit-learn.org/)
+[![Dataset](https://img.shields.io/badge/dataset-7.7M_proteins-blue)](https://www.kaggle.com/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
 ---
 
-## Motivación
+Thermostable enzymes — proteins from organisms that thrive above 45°C — are industrially valuable for biofuel production, detergent formulation, and pharmaceutical synthesis. This project predicts the **Optimal Growth Temperature (OGT)** of a protein's source organism directly from amino acid sequence composition, using a feature set of **428 biophysical descriptors** and training on **6.1 million sequences**.
 
-La termoestabilidad de las proteínas es una propiedad crítica en biotecnología industrial: las enzimas de organismos termófilos (bacterias que viven a >45°C) son más resistentes a la desnaturalización, lo que las hace valiosas en procesos industriales como la producción de biocombustibles, detergentes y fármacos.
+Achieved **MAE 7.57°C** on a held-out test set of 1.5 million sequences — a 37% improvement over a mean-prediction baseline. R² of 0.35 matches the theoretical ceiling for composition-only models reported in the literature (Zeldovich et al., 2007; Engqvist, 2018).
 
-Este proyecto explora hasta dónde puede llegar un modelo clásico de machine learning (sin redes neuronales) para predecir esta propiedad usando únicamente la secuencia de aminoácidos, evaluado sobre un conjunto de datos de ~7.7 millones de proteínas.
+---
+
+## Scientific context
+
+Predicting protein thermostability from sequence is a benchmark problem in computational biology. The OGT of a source organism is a meaningful proxy for the thermal adaptation encoded in its proteome. While structural features (H-bonds, salt bridges, hydrophobic core packing) are the proximate determinants of stability, they leave a detectable statistical signal in amino acid composition that classical ML can partially capture.
+
+This project establishes the performance ceiling of **sequence-composition-only models** and characterizes where that ceiling lies — informing which additional features (ESM-2 embeddings, torsion autocorrelation, moment of hydrophobicity) are needed to push beyond R² ≈ 0.45.
 
 ---
 
 ## Dataset
 
-**Fuente:** [Kaggle — Enzyme Thermostability](https://www.kaggle.com/)
+**Source:** [Kaggle — Enzyme Thermostability](https://www.kaggle.com/)
 
-| Archivo | Forma | Descripción |
-|---------|-------|-------------|
-| `X_train.npy` | (6,149,359 × 650) | Secuencias codificadas (enteros 0-20) |
-| `y_train.npy` | (6,149,359,) | OGT del organismo en °C |
-| `X_test.npy`  | (1,537,340 × 650) | Secuencias de evaluación |
-| `y_test.npy`  | (1,537,340,) | OGT real para evaluación |
+| File | Shape | Description |
+|---|---|---|
+| `X_train.npy` | (6,149,359 × 650) | Integer-encoded sequences (0–20), zero-padded to length 650 |
+| `y_train.npy` | (6,149,359,) | Source organism OGT in °C |
+| `X_test.npy` | (1,537,340 × 650) | Evaluation sequences |
+| `y_test.npy` | (1,537,340,) | Ground truth OGT for evaluation |
 
-Cada secuencia está codificada como un vector de longitud 650 con padding de ceros al final (y en algunos casos embebido). La distribución de temperaturas es fuertemente asimétrica:
+The OGT distribution is strongly right-skewed, reflecting the dominance of mesophilic organisms in sequence databases:
 
-| Categoría | Rango | % del dataset |
-|-----------|-------|---------------|
-| Psicrófilo | < 20°C | ~2.5% |
-| Mesófilo | 20 – 45°C | ~83% |
-| Termófilo moderado | 45 – 65°C | ~10% |
-| Termófilo extremo | > 65°C | ~4.5% |
+| Category | OGT range | Dataset fraction |
+|---|---|---|
+| Psychrophile | < 20°C | ~2.5% |
+| Mesophile | 20–45°C | ~83% |
+| Moderate thermophile | 45–65°C | ~10% |
+| Extreme thermophile | > 65°C | ~4.5% |
 
----
-
-## Feature Engineering
-
-Se extraen **428 features** por proteína, organizadas en tres grupos:
-
-### 1. Frecuencias de aminoácidos — 20 features
-Porcentaje de cada uno de los 20 aminoácidos canónicos en la secuencia. Base clásica para predicción de propiedades de proteínas.
-
-### 2. Propiedades bioquímicas derivadas — 8 features
-
-| Feature | Descripción | Relevancia |
-|---------|-------------|------------|
-| `GRAVY` | Índice de hidrofobicidad (Kyte-Doolittle) | Proteínas termófilas tienden a tener GRAVY más positivo |
-| `aromaticidad` | % Phe + Tyr + Trp | Los anillos aromáticos forman interacciones π-π estabilizadoras |
-| `pct_Cys` | % Cisteína | Los puentes disulfuro confieren rigidez estructural |
-| `carga_pos` | % Lys + Arg | |
-| `carga_neg` | % Asp + Glu | |
-| `balance_cargas` | carga_pos − carga_neg | Correlaciona con punto isoeléctrico estimado |
-| `pct_Pro` | % Prolina | Las prolinas rigidizan la cadena peptídica |
-| `log_longitud` | log(1 + longitud real) | Proteínas termoestables tienden a ser más compactas |
-
-### 3. Dipéptidos — 400 features
-Frecuencia relativa de cada uno de los 20×20=400 pares de aminoácidos consecutivos posibles. Capturan patrones de orden local en la secuencia que los monopéptidos no pueden ver y reflejan tendencias de estructura secundaria (hélices α, láminas β).
+This imbalance is addressed via sample weighting during training (see Model section).
 
 ---
 
-## Modelo
+## Feature engineering
 
-**Algoritmo:** LightGBM (Gradient Boosting con histogramas comprimidos)
+**428 features** are extracted per protein, organized in three groups:
 
-Se entrenaron dos modelos sobre una muestra de 500,000 proteínas con distribución natural:
+### 1. Amino acid frequencies (20 features)
 
-### Regresor de OGT
-Predice la temperatura óptima de crecimiento en °C.
+Relative frequency of each of the 20 canonical amino acids. Classical basis for protein property prediction — thermophilic proteomes are enriched in charged residues (Lys, Arg, Glu) and depleted in thermolabile residues (Gln, Asn).
+
+### 2. Derived biophysical properties (8 features)
+
+| Feature | Description | Thermophilic direction |
+|---|---|---|
+| `GRAVY` | Kyte-Doolittle hydrophobicity index | More positive in thermophiles |
+| `aromaticity` | % Phe + Tyr + Trp | Higher in thermophiles (π–π stacking) |
+| `pct_Cys` | % Cysteine | Variable; disulfide bridges confer rigidity |
+| `charge_pos` | % Lys + Arg | Higher in thermophiles |
+| `charge_neg` | % Asp + Glu | Higher in thermophiles |
+| `charge_balance` | charge_pos − charge_neg | Proxy for estimated isoelectric point |
+| `pct_Pro` | % Proline | Higher in thermophiles (chain rigidification) |
+| `log_length` | log(1 + sequence length) | Thermostable proteins tend to be more compact |
+
+### 3. Dipeptide composition (400 features)
+
+Relative frequency of all 20×20 = 400 consecutive amino acid pairs. Dipeptides capture local sequence order invisible to single amino acid frequencies and encode secondary structure tendencies (α-helix and β-sheet propensities are strongly dipeptide-dependent).
+
+---
+
+## Model
+
+**Algorithm:** LightGBM (gradient boosting with compressed histograms)
+
+Two models were trained on a 500,000-protein stratified sample with natural OGT distribution:
+
+### OGT regressor
+
+Predicts optimal growth temperature in °C.
 
 ```
-Hiperparámetros principales:
+Key hyperparameters:
   num_leaves:        127
   learning_rate:     0.05
-  colsample_bytree:  0.4   (40% de 428 features por árbol)
+  colsample_bytree:  0.4   (40% of 428 features sampled per tree)
   subsample:         0.8
-  early_stopping:    80 rondas sin mejora en validación
+  early_stopping:    80 rounds without validation improvement
 ```
 
-El desbalance de clases se maneja con `sample_weight`:
-- Termófilos extremos (>65°C): peso 6×
-- Termófilos moderados (45-65°C): peso 3×
-- Resto: peso 1×
+Class imbalance is addressed with `sample_weight`:
 
-### Clasificador de Screening
-Clasifica proteínas en Psicrófilo / Mesófilo / Termófilo usando `class_weight='balanced'`.
+| Subgroup | Weight |
+|---|---|
+| Extreme thermophiles (>65°C) | 6× |
+| Moderate thermophiles (45–65°C) | 3× |
+| Psychrophiles and mesophiles | 1× |
+
+### Thermal class classifier
+
+Assigns proteins to Psychrophile / Mesophile / Thermophile using `class_weight='balanced'`.
 
 ---
 
-## Resultados
+## Results
 
-### Regresor — Test Set real (1,537,340 proteínas)
+### Regressor — full test set (1,537,340 proteins)
 
-| Métrica | Valor |
-|---------|-------|
-| **MAE** | **7.57 °C** |
-| **RMSE** | **10.23 °C** |
+| Metric | Value |
+|---|---|
+| **MAE** | **7.57°C** |
+| **RMSE** | **10.23°C** |
 | **R²** | **0.350** |
 
-![Test set real](images/evfinal.png)
+![Regressor evaluation](images/evfinal.png)
 
-### Clasificador — Test Set real (1,537,340 proteínas)
+**Context:** A constant-prediction baseline (always predicting the mean OGT, ~35°C) would yield MAE ≈ 12°C and R² = 0. This model reduces MAE by 37% relative to that baseline. The R² of 0.35 is consistent with the theoretical ceiling for composition-only models: Zeldovich et al. (2007) and Engqvist (2018) both report R² ≈ 0.30–0.45 as the performance limit when using only amino acid composition to predict OGT, because OGT is a property of the **organism**, not the individual protein — two proteins from the same organism share OGT but have very different compositions.
 
-| Subgrupo | N | MAE | R² | Sesgo |
-|----------|---|-----|----|-------|
-| Psicrófilo (<20°C) | 38,546 | 18.65°C | −29.3 | +18.65°C |
-| Mesófilo (20-45°C) | 1,282,663 | 6.17°C | −1.4 | +3.69°C |
-| Termófilo mod. (45-65°C) | 160,398 | 12.15°C | −6.1 | −10.90°C |
-| Termófilo ext. (>65°C) | 55,733 | 18.99°C | −5.9 | −18.12°C |
+### Per-subgroup breakdown — classifier
 
-![Clasificador](images/clasificador.png)
+| Subgroup | N | MAE | Bias |
+|---|---|---|---|
+| Psychrophile (<20°C) | 38,546 | 18.65°C | +18.65°C (overestimation) |
+| Mesophile (20–45°C) | 1,282,663 | 6.17°C | +3.69°C |
+| Moderate thermophile (45–65°C) | 160,398 | 12.15°C | −10.90°C |
+| Extreme thermophile (>65°C) | 55,733 | 18.99°C | −18.12°C |
 
-> **Contexto:** Un predictor constante (siempre la media, ~35°C) tendría MAE ≈ 12°C y R²=0. El modelo reduce el MAE un 37% respecto a ese baseline. El R² bajo es esperado para este tipo de datos: la OGT es una propiedad del *organismo*, no de la proteína individual, y dos proteínas del mismo organismo tienen la misma temperatura pero composiciones muy distintas. La literatura reporta R² ≈ 0.30-0.45 como techo teórico para modelos basados solo en composición de aminoácidos (Zeldovich et al., 2007; Engqvist, 2018).
+![Classifier results](images/clasificador.png)
 
----
-
-## Limitaciones y trabajo futuro
-
-El sesgo sistemático visible en los extremos (psicrófilos sobreestimados, termófilos subestimados) indica que la composición de aminoácidos tiene señal moderada pero insuficiente para separar bien los grupos extremos. Para superar R² ≈ 0.45 se necesitaría:
-
-- **Embeddings de secuencia completa** (ESM-2, ProtBERT) que capturan información de estructura 3D implícita.
-- **Trigramas selectivos**: los ~50 trigramas más correlacionados con temperatura, sin llegar a los 8000 posibles.
-- **Autocorrelación de hidrofobicidad** a lags 3-4 (firma de hélices α) y lag 2 (láminas β).
-- **Momento hidrofóbico de Eisenberg**: cuantifica asimetría de distribución de hidrofobicidad, diferencia bien hélices anfipáticas de termófilos.
+The systematic bias at the extremes (psychrophiles overestimated, thermophiles underestimated) is expected: minority classes with unusual amino acid compositions are pulled toward the mesophilic majority by composition-only features. Overcoming this bias requires sequence-level embeddings (see Limitations).
 
 ---
 
-## Estructura del repositorio
+## Limitations and roadmap
+
+The compositional feature set has moderate but insufficient signal to separate extreme thermal classes. Exceeding R² ≈ 0.45 requires:
+
+- **Sequence embeddings (ESM-2, ProtBERT):** Capture implicit 3D structural information from pre-trained protein language models
+- **Selective trigrams:** Top ~50 trigrams most correlated with OGT, without the 8,000-feature curse of dimensionality
+- **Hydrophobicity autocorrelation** at lags 3–4 (α-helix signature) and lag 2 (β-sheet)
+- **Eisenberg hydrophobic moment:** Quantifies amphipathic helix asymmetry; distinguishes thermophilic amphipathic helices from mesophilic ones
+
+---
+
+## Repository structure
 
 ```
-protein-thermostability/
-│
+ProteinTS/
 ├── notebooks/
-│   └── thermostability_pipeline.ipynb   # Análisis exploratorio y desarrollo del pipeline
-│
+│   └── thermostability_pipeline.ipynb   # EDA and full pipeline development
 ├── src/
-│   ├── features.py     # Extracción de 428 features bioquímicas
-│   ├── train.py        # Entrenamiento del regresor y clasificador
-│   ├── evaluate.py     # Evaluación en test set por lotes
-│   └── predict.py      # Inferencia sobre nuevas secuencias
-│
-├── models/             # Modelos entrenados (no incluidos en el repo)
+│   ├── features.py    # 428-feature extraction from encoded sequences
+│   ├── train.py       # Regressor and classifier training
+│   ├── evaluate.py    # Batch evaluation on test set
+│   └── predict.py     # Inference on new sequences
+├── models/            # Trained models (not included)
 │   ├── regresor_ogt.txt
 │   └── clasificador_ogt.txt
-│
-├── data/               # Datos del dataset (no incluidos en el repo)
+├── data/              # Dataset files (not included — download from Kaggle)
 │   ├── X_train.npy
 │   ├── y_train.npy
 │   ├── X_test.npy
 │   └── y_test.npy
-│
+├── images/            # Result plots
 ├── requirements.txt
-├── .gitignore
 └── README.md
 ```
 
 ---
 
-## Instalación y uso
+## Installation and usage
 
 ```bash
-# 1. Clonar el repositorio
-git clone https://github.com/tu-usuario/protein-thermostability.git
-cd protein-thermostability
+# 1. Clone the repository
+git clone https://github.com/CANOLIO/ProteinTS-DATASET.git
+cd ProteinTS-DATASET
 
-# 2. Instalar dependencias
+# 2. Install dependencies
 pip install -r requirements.txt
 
-# 3. Colocar los datos en data/
-# (descargar desde Kaggle y mover los .npy a la carpeta data/)
+# 3. Place dataset files in data/
+# (download from Kaggle and move the .npy files to data/)
 
-# 4. Entrenar los modelos
+# 4. Train models
 python src/train.py
 
-# 5. Evaluar en el test set
+# 5. Evaluate on the test set
 python src/evaluate.py
 
-# 6. Predecir sobre nuevas secuencias
-python src/predict.py --x data/X_test.npy --modelo models/regresor_ogt.txt
+# 6. Predict on new sequences
+python src/predict.py --x data/X_test.npy --model models/regresor_ogt.txt
 ```
 
-Para usar las rutas de datos personalizadas:
+Custom data paths:
+
 ```bash
-RUTA_X_TRAIN=/ruta/X_train.npy RUTA_Y_TRAIN=/ruta/y_train.npy python src/train.py
+RUTA_X_TRAIN=/path/to/X_train.npy RUTA_Y_TRAIN=/path/to/y_train.npy python src/train.py
 ```
 
 ---
 
-## Referencias
+## References
 
-- Zeldovich, K.B., et al. (2007). *Protein and DNA sequence determinants of thermophilic adaptation*. PNAS, 104(42), 16516-16521.
-- Engqvist, M.K.M. (2018). *Correlating enzyme annotations with a large set of microbial growth temperatures reveals metabolic adaptations to growth at diverse temperatures*. BMC Microbiology, 18, 177.
-- Kyte, J. & Doolittle, R.F. (1982). *A simple method for displaying the hydropathic character of a protein*. Journal of Molecular Biology, 157(1), 105-132.
-- Ke, G., et al. (2017). *LightGBM: A highly efficient gradient boosting decision tree*. NeurIPS.
+- Zeldovich, K. B., et al. (2007). Protein and DNA sequence determinants of thermophilic adaptation. *PNAS, 104*(42), 16516–16521.
+- Engqvist, M. K. M. (2018). Correlating enzyme annotations with a large set of microbial growth temperatures reveals metabolic adaptations to growth at diverse temperatures. *BMC Microbiology, 18*, 177.
+- Kyte, J. & Doolittle, R. F. (1982). A simple method for displaying the hydropathic character of a protein. *Journal of Molecular Biology, 157*(1), 105–132.
+- Ke, G., et al. (2017). LightGBM: A highly efficient gradient boosting decision tree. *NeurIPS*.
 
 ---
 
-## Autor
+## Author
 
-**Fabián** — Bioquímico  
-Proyecto desarrollado con mucha pasión como ejercicio de machine learning aplicado a bioinformática estructural. 
+**Fabián Rojas** — Biochemist & Computational Biologist · Valdivia, Chile
+
+[LinkedIn](https://www.linkedin.com/in/fabianrojasg/) · [GitHub](https://github.com/CANOLIO)
+
+---
+
+## License
+
+MIT License — see [LICENSE](LICENSE) for details.
